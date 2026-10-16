@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import { useCartStore } from '@/store/useCartStore';
 
 interface CartSummaryProps {
@@ -28,6 +29,12 @@ export const CartSummary: React.FC<CartSummaryProps> = ({
   corPrimaria = '#E11D48',
   onOpenCart,
 }) => {
+  const router = useRouter();
+  const params = useParams();
+  const searchParams = useSearchParams();
+  const restauranteSlug = (params?.restaurante_slug as string) || '';
+  const numeroMesa = searchParams?.get('mesa') || '';
+
   // Estado para garantir sincronização segura com localStorage no Next.js (evita hydration mismatch)
   const [isMounted, setIsMounted] = useState(false);
 
@@ -60,7 +67,13 @@ export const CartSummary: React.FC<CartSummaryProps> = ({
       className="fixed bottom-4 left-4 right-4 z-50 max-w-md mx-auto transition-all duration-300 ease-out animate-in fade-in slide-in-from-bottom-5"
     >
       <div
-        onClick={onOpenCart}
+        onClick={() => {
+          if (onOpenCart) {
+            onOpenCart();
+          } else if (restauranteSlug) {
+            router.push(`/${restauranteSlug}/carrinho${numeroMesa ? `?mesa=${numeroMesa}` : ''}`);
+          }
+        }}
         style={{ backgroundColor: corPrimaria }}
         className="w-full flex items-center justify-between p-3.5 sm:p-4 rounded-2xl shadow-xl shadow-black/20 text-white cursor-pointer select-none active:scale-[0.98] transition-transform duration-150 backdrop-blur-md border border-white/20"
       >
