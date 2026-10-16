@@ -1,5 +1,7 @@
 import React from 'react';
 import { notFound } from 'next/navigation';
+import { CartSummary } from '@/components/CartSummary';
+import { AddToCartButton } from '@/components/AddToCartButton';
 
 // ==============================================================================
 // TIPAGEM TYPESCRIPT
@@ -385,17 +387,8 @@ export default async function RestauranteCardapioPage({ params, searchParams }: 
                       </div>
                     )}
 
-                    {/* Botão de Adicionar / Selecionar */}
-                    <button
-                      type="button"
-                      style={{ color: corPrimaria }}
-                      className="mt-2 text-xs font-semibold px-3 py-1 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors flex items-center gap-1 active:scale-95"
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4" />
-                      </svg>
-                      Adicionar
-                    </button>
+                    {/* Botão de Adicionar / Selecionar Integrado com Zustand */}
+                    <AddToCartButton produto={produto} corPrimaria={corPrimaria} />
                   </div>
                 </article>
               ))}
@@ -406,32 +399,10 @@ export default async function RestauranteCardapioPage({ params, searchParams }: 
 
       {/* 
         ========================================================================
-        RODAPÉ MOBILE FIXO (Resumo / Sacola de Pedidos)
+        BARRA FLUTUANTE REATIVA DO CARRINHO (ZUSTAND + LOCALSTORAGE)
         ========================================================================
       */}
-      <div className="fixed bottom-0 inset-x-0 bg-white/90 backdrop-blur-lg border-t border-slate-200/80 p-3 z-40">
-        <div className="max-w-md mx-auto flex items-center justify-between gap-4">
-          <div className="flex flex-col">
-            <span className="text-[11px] uppercase tracking-wider text-slate-400 font-bold">
-              {restaurante.nome}
-            </span>
-            <span className="text-xs font-medium text-slate-600">
-              {produtos.length} {produtos.length === 1 ? 'item disponível' : 'itens disponíveis'}
-            </span>
-          </div>
-
-          <button
-            type="button"
-            style={{ backgroundColor: corPrimaria }}
-            className="px-5 py-2.5 text-white font-bold text-xs rounded-xl shadow-md active:scale-95 transition-transform flex items-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
-            </svg>
-            Ver Pedido
-          </button>
-        </div>
-      </div>
+      <CartSummary corPrimaria={corPrimaria} />
     </div>
   );
 }
