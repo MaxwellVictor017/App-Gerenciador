@@ -5,6 +5,8 @@ import { persist, createJSONStorage } from 'zustand/middleware';
 // TIPAGEM (TYPESCRIPT)
 // ==============================================================================
 
+export type TipoPedido = 'Mesa' | 'Retirada' | 'Delivery';
+
 export interface Adicional {
   nome: string;
   preco: number;
@@ -26,16 +28,22 @@ export type AddItemInput = Omit<CartItem, 'id' | 'quantidade'> & {
 export interface CartStore {
   // Estado
   items: CartItem[];
+  tipoPedido: TipoPedido;
+  taxaEntrega: number;
 
   // Ações (Actions)
   addItem: (item: AddItemInput) => void;
   removeItem: (id: string) => void;
   updateQuantity: (id: string, quantidade: number) => void;
   clearCart: () => void;
+  setTipoPedido: (tipo: TipoPedido) => void;
+  setTaxaEntrega: (taxa: number) => void;
 
   // Getters / Calculadoras
   getTotalItems: () => number;
-  getTotalPrice: () => number;
+  getSubtotal: () => number;
+  getCartTotal: () => number;
+  getTotalPrice: () => number; // Alias para compatibilidade com componentes existentes
 }
 
 // ==============================================================================
@@ -85,6 +93,8 @@ export const useCartStore = create<CartStore>()(
   persist(
     (set, get) => ({
       items: [],
+      tipoPedido: 'Mesa',
+      taxaEntrega: 7.0, // Taxa de entrega padrão (configurável pela API/restaurante)
 
       /**
        * Adiciona um item ao carrinho.
@@ -93,9 +103,10 @@ export const useCartStore = create<CartStore>()(
        */
       addItem: (itemInput: AddItemInput) => {
         const { items } = get();
-        const quantidadeAdicionar = itemInput.quantidade && itemInput.quantidade > 0
-          ? itemInput.quantidade
-          : 1;
+        const quantidadeAdicionar =
+          itemInput.quantidade && itemInput.quantidade > 0
+            ? itemInput.quantidade
+            : 1;
 
         // Localiza se já existe o exato mesmo produto com a mesma customização de adicionais
         const existingItemIndex = items.findIndex(
@@ -105,7 +116,6 @@ export const useCartStore = create<CartStore>()(
         );
 
         if (existingItemIndex > -1) {
-          // Incrementa a quantidade da linha existente
           const updatedItems = items.map((item, index) =>
             index === existingItemIndex
               ? { ...item, quantidade: item.quantidade + quantidadeAdicionar }
@@ -114,7 +124,6 @@ export const useCartStore = create<CartStore>()(
 
           set({ items: updatedItems });
         } else {
-          // Cria uma nova linha no carrinho com identificador único
           const newItem: CartItem = {
             id: generateId(),
             produto_id: itemInput.produto_id,
@@ -155,10 +164,24 @@ export const useCartStore = create<CartStore>()(
       },
 
       /**
-       * Limpa completamente o estado do carrinho.
+       * Limpa completamente o estado do carrinho mantendo a preferência de consumo.
        */
       clearCart: () => {
         set({ items: [] });
+      },
+
+      /**
+       * Define a modalidade de consumo do pedido (Mesa, Retirada ou Delivery).
+       */
+      setTipoPedido: (tipo: TipoPedido) => {
+        set({ tipoPedido: tipo });
+      },
+
+      /**
+       * Define a taxa de entrega calculada ou enviada pela API do restaurante.
+       */
+      setTaxaEntrega: (taxa: number) => {
+        set({ taxaEntrega: Math.max(0, taxa) });
       },
 
       /**
@@ -169,10 +192,9 @@ export const useCartStore = create<CartStore>()(
       },
 
       /**
-       * Getter: Retorna o valor monetário total do pedido.
-       * Soma o preço base aos adicionais selecionados e multiplica pela quantidade de cada linha.
+       * Getter: Retorna o subtotal bruto apenas dos itens (preço base + adicionais).
        */
-      getTotalPrice: () => {
+      getSubtotal: () => {
         return get().items.reduce((total, item) => {
           const adicionaisTotal = item.adicionais
             ? item.adicionais.reduce((acc, ad) => acc + ad.preco, 0)
@@ -181,6 +203,24 @@ export const useCartStore = create<CartStore>()(
           const precoUnitarioTotal = item.preco_base + adicionaisTotal;
           return total + precoUnitarioTotal * item.quantidade;
         }, 0);
+      },
+
+      /**
+       * Getter: Retorna o valor monetário total do pedido.
+       * Se o tipo de pedido for 'Delivery', soma a taxa de entrega ao valor dos itens.
+       */
+      getCartTotal: () => {
+        const subtotal = get().getSubtotal();
+        const { tipoPedido, taxaEntrega } = get();
+
+        return tipoPedido === 'Delivery' ? subtotal + taxaEntrega : subtotal;
+      },
+
+      /**
+       * Getter retrocompatível: retorna getCartTotal()
+       */
+      getTotalPrice: () => {
+        return get().getCartTotal();
       },
     }),
     {
