@@ -1,0 +1,104 @@
+// ==============================================================================
+// SCHEMA PRISMA - SISTEMA SAAS MULTI-TENANT PARA RESTAURANTES
+// Provedor de Banco de Dados: PostgreSQL
+// ==============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ------------------------------------------------------------------------------
+// MODEL: Tenant (Restaurante / Conta SaaS)
+// Representa a entidade raiz (inquilino) do sistema multi-tenant.
+// ------------------------------------------------------------------------------
+model Tenant {
+  id          String   @id @default(uuid()) @db.Uuid
+  nome        String   @db.VarChar(100)
+  slug        String   @unique @db.VarChar(100)
+  corPrimaria String?  @default("#E11D48") @map("cor_primaria") @db.VarChar(7)
+  logoUrl     String?  @map("logo_url") @db.Text
+  ativo       Boolean  @default(true)
+  criadoEm    DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  // Relações 1:N com isolamento por tenant
+  categorias Categoria[]
+  produtos   Produto[]
+  mesas      Mesa[]
+
+  @@map("tenants")
+}
+
+// ------------------------------------------------------------------------------
+// MODEL: Categoria
+// Categorização de itens do cardápio (ex: Bebidas, Sobremesas, Pratos Principais)
+// ------------------------------------------------------------------------------
+model Categoria {
+  id       String   @id @default(uuid()) @db.Uuid
+  tenantId String   @map("tenant_id") @db.Uuid
+  nome     String   @db.VarChar(60)
+  ordem    Int      @default(0)
+  criadoEm DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  // Relações
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  produtos Produto[]
+
+  // Índices para otimização em consultas escopadas por inquilino
+  @@index([tenantId])
+  @@map("categorias")
+}
+
+// ------------------------------------------------------------------------------
+// MODEL: Produto
+// Itens vendáveis do cardápio com suporte a valores monetários precisos
+// ------------------------------------------------------------------------------
+model Produto {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  categoriaId String   @map("categoria_id") @db.Uuid
+  nome        String   @db.VarChar(120)
+  descricao   String?  @db.Text
+  precoBase   Decimal  @map("preco_base") @db.Decimal(10, 2)
+  imagemUrl   String?  @map("imagem_url") @db.Text
+  criadoEm    DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  // Relações
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  categoria Categoria @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+
+  // Índices para alta performance e isolamento de tenant
+  @@index([tenantId])
+  @@index([tenantId, categoriaId])
+  @@map("produtos")
+}
+
+// ------------------------------------------------------------------------------
+// MODEL: Mesa
+// Mesas físicas do restaurante com QR Code para pedidos na mesa
+// ------------------------------------------------------------------------------
+model Mesa {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  numero    Int
+  qrCodeUrl String?  @map("qr_code_url") @db.Text
+  criadoEm  DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  // Relações
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Unicidade: dentro de um mesmo restaurante (tenant), não pode haver mesas com o mesmo número
+  @@unique([tenantId, numero])
+  @@index([tenantId])
+  @@map("mesas")
+}
