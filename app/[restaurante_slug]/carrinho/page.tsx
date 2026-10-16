@@ -3,11 +3,13 @@
 import React, { use, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCartStore, TipoPedido } from '@/store/useCartStore';
+import { useCartStore } from '@/store/useCartStore';
 
 interface PageProps {
   params: Promise<{ restaurante_slug: string }> | { restaurante_slug: string };
 }
+
+export type MetodoPagamento = 'Pix' | 'Cartao' | 'Dinheiro';
 
 function formatarMoeda(valor: number): string {
   return new Intl.NumberFormat('pt-BR', {
@@ -42,23 +44,26 @@ export default function CarrinhoPage({ params }: PageProps) {
   const getSubtotal = useCartStore((state) => state.getSubtotal);
   const getCartTotal = useCartStore((state) => state.getCartTotal);
 
-  // Estados do Formulário Dinâmico
+  // Estados do Formulário de Identificação
   const mesaInicial = searchParams.get('mesa') || '';
   const [numeroMesa, setNumeroMesa] = useState(mesaInicial);
   const [nomeCliente, setNomeCliente] = useState('');
   const [telefone, setTelefone] = useState('');
 
-  // Campos de Endereço para Delivery
+  // Endereço para Delivery
   const [cep, setCep] = useState('');
   const [rua, setRua] = useState('');
   const [numeroEndereco, setNumeroEndereco] = useState('');
   const [bairro, setBairro] = useState('');
   const [complemento, setComplemento] = useState('');
-
-  // Observações gerais
   const [observacoes, setObservacoes] = useState('');
 
-  // Feedback e Loading
+  // Estados de Forma de Pagamento
+  const [metodoPagamento, setMetodoPagamento] = useState<MetodoPagamento>('Pix');
+  const [precisaTroco, setPrecisaTroco] = useState(false);
+  const [trocoPara, setTrocoPara] = useState('');
+
+  // Estados de Submissão
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [erroFormulario, setErroFormulario] = useState<string | null>(null);
 
@@ -66,7 +71,6 @@ export default function CarrinhoPage({ params }: PageProps) {
     setIsMounted(true);
   }, []);
 
-  // Evita renderização descasada antes do cliente carregar os dados salvos
   if (!isMounted) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
@@ -121,30 +125,30 @@ export default function CarrinhoPage({ params }: PageProps) {
   }
 
   // ============================================================================
-  // FUNÇÃO DE SUBMISSÃO DO CHECKOUT
+  // FUNÇÃO DE SUBMISSÃO DO CHECKOUT (PAYLOAD FINAL COM PAGAMENTO)
   // ============================================================================
   const handleCheckout = async (e: React.FormEvent) => {
     e.preventDefault();
     setErroFormulario(null);
 
-    // Validações condicionais por tipo de pedido
+    // Validações por modalidade
     if (tipoPedido === 'Mesa') {
       if (!numeroMesa.trim()) {
-        setErroFormulario('Por favor, informe o número da mesa.');
+        setErroFormulario('Por favor, informe o número da sua mesa.');
         return;
       }
     } else if (tipoPedido === 'Retirada') {
       if (!nomeCliente.trim()) {
-        setErroFormulario('Por favor, informe o seu nome para retirada.');
+        setErroFormulario('Por favor, informe seu nome para retirada.');
         return;
       }
       if (!telefone.trim()) {
-        setErroFormulario('Por favor, informe seu telefone de contato.');
+        setErroFormulario('Por favor, informe seu telefone / WhatsApp.');
         return;
       }
     } else if (tipoPedido === 'Delivery') {
       if (!nomeCliente.trim()) {
-        setErroFormulario('Por favor, informe o seu nome.');
+        setErroFormulario('Por favor, informe seu nome para entrega.');
         return;
       }
       if (!telefone.trim()) {
@@ -152,7 +156,16 @@ export default function CarrinhoPage({ params }: PageProps) {
         return;
       }
       if (!rua.trim() || !numeroEndereco.trim() || !bairro.trim()) {
-        setErroFormulario('Por favor, preencha os campos obrigatórios do endereço de entrega.');
+        setErroFormulario('Por favor, preencha os campos obrigatórios do endereço.');
+        return;
+      }
+    }
+
+    // Validação de troco para dinheiro
+    if (metodoPagamento === 'Dinheiro' && precisaTroco) {
+      const trocoNumero = parseFloat(trocoPara.replace(/[^\d.,]/g, '').replace(',', '.'));
+      if (isNaN(trocoNumero) || trocoNumero <= totalGeral) {
+        setErroFormulario(`O valor para troco deve ser maior que o total do pedido (${formatarMoeda(totalGeral)}).`);
         return;
       }
     }
@@ -160,7 +173,7 @@ export default function CarrinhoPage({ params }: PageProps) {
     setIsSubmitting(true);
 
     try {
-      // Montagem do payload adaptado à modalidade escolhida
+      // 1. Estruturação do Payload Final
       const payload = {
         tenant_slug: restaurante_slug,
         tipo_pedido: tipoPedido,
@@ -180,6 +193,13 @@ export default function CarrinhoPage({ params }: PageProps) {
               : undefined,
           observacoes: observacoes.trim() || undefined,
         },
+        pagamento: {
+          metodo: metodoPagamento,
+          precisa_troco: metodoPagamento === 'Dinheiro' ? precisaTroco : false,
+          troco_para:
+            metodoPagamento === 'Dinheiro' && precisaTroco ? trocoPara.trim() : null,
+          status: metodoPagamento === 'Pix' ? 'aguardando_pix' : 'pagamento_na_entrega',
+        },
         itens: items.map((item) => ({
           produto_id: item.produto_id,
           nome: item.nome,
@@ -197,11 +217,12 @@ export default function CarrinhoPage({ params }: PageProps) {
         criado_em: new Date().toISOString(),
       };
 
-      // Chamada HTTP para o backend
+      // 2. Chamada à API (com fallback suave para testes em dev)
       const backendBaseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+      let pedidoIdRetornado = `PED-${Date.now().toString().slice(-6)}`;
 
       try {
-        await fetch(`${backendBaseUrl}/api/pedidos`, {
+        const res = await fetch(`${backendBaseUrl}/api/pedidos`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -209,35 +230,51 @@ export default function CarrinhoPage({ params }: PageProps) {
           },
           body: JSON.stringify(payload),
         });
+
+        if (res.ok) {
+          const resData = await res.json();
+          if (resData.pedido?.id) {
+            pedidoIdRetornado = resData.pedido.id;
+          }
+        }
       } catch (_apiErr) {
         await new Promise((resolve) => setTimeout(resolve, 800));
       }
 
-      // Limpa os itens do carrinho após submissão bem-sucedida
+      // 3. Limpeza do Carrinho após criação do pedido
       clearCart();
 
-      // Redireciona para a tela de confirmação
       const paramMesa = tipoPedido === 'Mesa' ? `&mesa=${encodeURIComponent(numeroMesa.trim())}` : '';
       const paramCliente = tipoPedido !== 'Mesa' ? `&cliente=${encodeURIComponent(nomeCliente.trim())}` : `&cliente=Mesa+${encodeURIComponent(numeroMesa.trim())}`;
-      
-      router.push(
-        `/${restaurante_slug}/sucesso?tipo=${encodeURIComponent(
-          tipoPedido
-        )}${paramMesa}${paramCliente}&total=${totalGeral.toFixed(2)}`
-      );
+
+      // 4. Se o método escolhido for Pix, redireciona para a tela do Pix
+      if (metodoPagamento === 'Pix') {
+        router.push(
+          `/${restaurante_slug}/pagamento-pix?pedido_id=${encodeURIComponent(
+            pedidoIdRetornado
+          )}&total=${totalGeral.toFixed(2)}${paramMesa}${paramCliente}&tipo=${encodeURIComponent(
+            tipoPedido
+          )}`
+        );
+      } else {
+        // Redireciona diretamente para a tela de sucesso para Cartão ou Dinheiro
+        router.push(
+          `/${restaurante_slug}/sucesso?tipo=${encodeURIComponent(
+            tipoPedido
+          )}${paramMesa}${paramCliente}&total=${totalGeral.toFixed(2)}&metodo=${encodeURIComponent(
+            metodoPagamento
+          )}`
+        );
+      }
     } catch (_error) {
-      setErroFormulario('Não foi possível enviar o seu pedido. Tente novamente.');
+      setErroFormulario('Não foi possível processar o seu pedido. Tente novamente.');
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pb-36 antialiased selection:bg-rose-500 selection:text-white">
-      {/* 
-        ========================================================================
-        CABEÇALHO
-        ========================================================================
-      */}
+    <div className="min-h-screen bg-slate-50 text-slate-900 pb-44 antialiased selection:bg-rose-500 selection:text-white">
+      {/* CABEÇALHO */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200/80 px-4 py-3.5 shadow-xs">
         <div className="max-w-md mx-auto flex items-center justify-between">
           <Link
@@ -251,7 +288,7 @@ export default function CarrinhoPage({ params }: PageProps) {
           </Link>
 
           <h1 className="text-base font-extrabold text-slate-900 tracking-tight">
-            Checkout ({totalItens})
+            Checkout do Pedido
           </h1>
 
           <button
@@ -267,16 +304,15 @@ export default function CarrinhoPage({ params }: PageProps) {
       <main className="max-w-md mx-auto px-4 pt-5 flex flex-col gap-6">
         {/* 
           ======================================================================
-          SELEÇÃO DE CONSUMO: RADIO GROUP EM PÍLULA (MESA, RETIRADA, DELIVERY)
+          SEÇÃO 1: MODALIDADE DE RECEBIMENTO (RADIO GROUP PÍLULA)
           ======================================================================
         */}
-        <section aria-label="Modalidade do pedido">
+        <section aria-label="Modalidade de consumo">
           <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
-            Como deseja receber seu pedido?
+            1. Como deseja receber?
           </label>
 
           <div className="grid grid-cols-3 gap-1.5 bg-slate-200/80 p-1.5 rounded-2xl shadow-inner border border-slate-300/60">
-            {/* Opção: Na Mesa */}
             <button
               type="button"
               onClick={() => setTipoPedido('Mesa')}
@@ -292,7 +328,6 @@ export default function CarrinhoPage({ params }: PageProps) {
               <span>Na Mesa</span>
             </button>
 
-            {/* Opção: Retirada */}
             <button
               type="button"
               onClick={() => setTipoPedido('Retirada')}
@@ -308,7 +343,6 @@ export default function CarrinhoPage({ params }: PageProps) {
               <span>Retirada</span>
             </button>
 
-            {/* Opção: Delivery */}
             <button
               type="button"
               onClick={() => setTipoPedido('Delivery')}
@@ -328,20 +362,20 @@ export default function CarrinhoPage({ params }: PageProps) {
 
         {/* 
           ======================================================================
-          LISTA DE ITENS DO CARRINHO
+          SEÇÃO 2: RESUMO DOS ITENS
           ======================================================================
         */}
-        <section aria-label="Itens selecionados" className="flex flex-col gap-3">
+        <section aria-label="Itens selecionados" className="flex flex-col gap-2.5">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-500">
-              Itens ({items.length})
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              2. Resumo do Pedido ({items.length} itens)
             </h2>
             <span className="text-xs text-slate-500 font-semibold">
               Subtotal: {formatarMoeda(subtotal)}
             </span>
           </div>
 
-          <div className="flex flex-col gap-2.5">
+          <div className="flex flex-col gap-2">
             {items.map((item) => {
               const adicionaisSoma = item.adicionais
                 ? item.adicionais.reduce((acc, ad) => acc + ad.preco, 0)
@@ -352,7 +386,7 @@ export default function CarrinhoPage({ params }: PageProps) {
               return (
                 <article
                   key={item.id}
-                  className="bg-white border border-slate-200/90 rounded-2xl p-3.5 shadow-xs flex flex-col gap-2.5"
+                  className="bg-white border border-slate-200/90 rounded-2xl p-3.5 shadow-xs flex flex-col gap-2"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1">
@@ -374,11 +408,9 @@ export default function CarrinhoPage({ params }: PageProps) {
                       )}
                     </div>
 
-                    <div className="text-right shrink-0">
-                      <span className="font-extrabold text-sm text-slate-900">
-                        {formatarMoeda(subtotalItem)}
-                      </span>
-                    </div>
+                    <span className="font-extrabold text-sm text-slate-900 shrink-0">
+                      {formatarMoeda(subtotalItem)}
+                    </span>
                   </div>
 
                   <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
@@ -398,20 +430,16 @@ export default function CarrinhoPage({ params }: PageProps) {
                         type="button"
                         onClick={() => updateQuantity(item.id, item.quantidade - 1)}
                         className="w-7 h-7 rounded-lg bg-white shadow-xs flex items-center justify-center font-bold text-slate-700 hover:bg-slate-50 active:scale-95 transition-all text-sm cursor-pointer"
-                        aria-label="Diminuir"
                       >
                         -
                       </button>
-
                       <span className="w-8 text-center font-black text-xs text-slate-900 select-none">
                         {item.quantidade}
                       </span>
-
                       <button
                         type="button"
                         onClick={() => updateQuantity(item.id, item.quantidade + 1)}
                         className="w-7 h-7 rounded-lg bg-white shadow-xs flex items-center justify-center font-bold text-slate-700 hover:bg-slate-50 active:scale-95 transition-all text-sm cursor-pointer"
-                        aria-label="Aumentar"
                       >
                         +
                       </button>
@@ -425,215 +453,359 @@ export default function CarrinhoPage({ params }: PageProps) {
 
         {/* 
           ======================================================================
-          FORMULÁRIO COM RENDERIZAÇÃO CONDICIONAL POR MODALIDADE
+          SEÇÃO 3: DADOS DE IDENTIFICAÇÃO E ENTREGA
           ======================================================================
         */}
-        <form id="checkout-form" onSubmit={handleCheckout} className="flex flex-col gap-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold uppercase tracking-wider text-slate-500">
-              {tipoPedido === 'Mesa' && 'Dados da Mesa'}
-              {tipoPedido === 'Retirada' && 'Dados para Retirada'}
-              {tipoPedido === 'Delivery' && 'Endereço de Entrega'}
-            </h2>
-            <span className="text-xs text-rose-600 font-semibold">* Obrigatório</span>
-          </div>
+        <form id="checkout-form" onSubmit={handleCheckout} className="flex flex-col gap-6">
+          <section aria-label="Dados de entrega e cliente">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                3. {tipoPedido === 'Mesa' ? 'Dados da Mesa' : tipoPedido === 'Retirada' ? 'Dados para Retirada' : 'Endereço de Entrega'}
+              </h2>
+              <span className="text-[11px] text-rose-600 font-semibold">* Obrigatório</span>
+            </div>
 
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs flex flex-col gap-3.5">
-            {/* 
-              CASO 1: SE 'NA MESA' -> MOSTRA APENAS 'NÚMERO DA MESA'
-            */}
-            {tipoPedido === 'Mesa' && (
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label htmlFor="numeroMesa" className="block text-xs font-bold text-slate-700">
-                    Número da Mesa *
-                  </label>
-                  {mesaInicial && (
-                    <span className="text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                      QR Code Detectado
-                    </span>
-                  )}
-                </div>
-                <input
-                  id="numeroMesa"
-                  type="text"
-                  required
-                  placeholder="Ex: 04"
-                  value={numeroMesa}
-                  onChange={(e) => setNumeroMesa(e.target.value)}
-                  className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
-                />
-              </div>
-            )}
-
-            {/* 
-              CASO 2: SE 'RETIRADA' -> MOSTRA APENAS 'NOME' E 'TELEFONE'
-            */}
-            {tipoPedido === 'Retirada' && (
-              <>
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs flex flex-col gap-3.5">
+              {tipoPedido === 'Mesa' && (
                 <div>
-                  <label htmlFor="nomeCliente" className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Nome Completo *
-                  </label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label htmlFor="numeroMesa" className="block text-xs font-bold text-slate-700">
+                      Número da Mesa *
+                    </label>
+                    {mesaInicial && (
+                      <span className="text-[11px] font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                        QR Code Detectado
+                      </span>
+                    )}
+                  </div>
                   <input
-                    id="nomeCliente"
+                    id="numeroMesa"
                     type="text"
                     required
-                    placeholder="Ex: Maria Fernandes"
-                    value={nomeCliente}
-                    onChange={(e) => setNomeCliente(e.target.value)}
-                    className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                    placeholder="Ex: 04"
+                    value={numeroMesa}
+                    onChange={(e) => setNumeroMesa(e.target.value)}
+                    className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
                   />
                 </div>
+              )}
 
-                <div>
-                  <label htmlFor="telefone" className="block text-xs font-bold text-slate-700 mb-1.5">
-                    WhatsApp / Telefone *
-                  </label>
-                  <input
-                    id="telefone"
-                    type="tel"
-                    required
-                    placeholder="Ex: (11) 98765-4321"
-                    value={telefone}
-                    onChange={(e) => setTelefone(e.target.value)}
-                    className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
-                  />
-                </div>
-              </>
-            )}
-
-            {/* 
-              CASO 3: SE 'DELIVERY' -> MOSTRA 'NOME', 'TELEFONE' E CAMPOS DE ENDEREÇO (OCULTA MESA)
-            */}
-            {tipoPedido === 'Delivery' && (
-              <>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {tipoPedido === 'Retirada' && (
+                <>
                   <div>
-                    <label htmlFor="nomeClienteDelivery" className="block text-xs font-bold text-slate-700 mb-1.5">
-                      Nome do Destinatário *
+                    <label htmlFor="nomeCliente" className="block text-xs font-bold text-slate-700 mb-1.5">
+                      Nome Completo *
                     </label>
                     <input
-                      id="nomeClienteDelivery"
+                      id="nomeCliente"
                       type="text"
                       required
-                      placeholder="Ex: Carlos Silva"
+                      placeholder="Ex: Maria Fernandes"
                       value={nomeCliente}
                       onChange={(e) => setNomeCliente(e.target.value)}
-                      className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                      className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
                     />
                   </div>
 
                   <div>
-                    <label htmlFor="telefoneDelivery" className="block text-xs font-bold text-slate-700 mb-1.5">
-                      Telefone / WhatsApp *
+                    <label htmlFor="telefone" className="block text-xs font-bold text-slate-700 mb-1.5">
+                      WhatsApp / Telefone *
                     </label>
                     <input
-                      id="telefoneDelivery"
+                      id="telefone"
                       type="tel"
                       required
-                      placeholder="Ex: (11) 98888-7777"
+                      placeholder="Ex: (11) 98765-4321"
                       value={telefone}
                       onChange={(e) => setTelefone(e.target.value)}
-                      className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                      className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
                     />
                   </div>
-                </div>
+                </>
+              )}
 
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="col-span-1">
-                    <label htmlFor="cep" className="block text-xs font-bold text-slate-700 mb-1.5">
-                      CEP
+              {tipoPedido === 'Delivery' && (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="nomeClienteDelivery" className="block text-xs font-bold text-slate-700 mb-1.5">
+                        Nome do Destinatário *
+                      </label>
+                      <input
+                        id="nomeClienteDelivery"
+                        type="text"
+                        required
+                        placeholder="Ex: Carlos Silva"
+                        value={nomeCliente}
+                        onChange={(e) => setNomeCliente(e.target.value)}
+                        className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="telefoneDelivery" className="block text-xs font-bold text-slate-700 mb-1.5">
+                        Telefone / WhatsApp *
+                      </label>
+                      <input
+                        id="telefoneDelivery"
+                        type="tel"
+                        required
+                        placeholder="Ex: (11) 98888-7777"
+                        value={telefone}
+                        onChange={(e) => setTelefone(e.target.value)}
+                        className="w-full px-4 py-3.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-1">
+                      <label htmlFor="cep" className="block text-xs font-bold text-slate-700 mb-1.5">
+                        CEP
+                      </label>
+                      <input
+                        id="cep"
+                        type="text"
+                        placeholder="00000-000"
+                        value={cep}
+                        onChange={(e) => setCep(e.target.value)}
+                        className="w-full px-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                      />
+                    </div>
+
+                    <div className="col-span-2">
+                      <label htmlFor="rua" className="block text-xs font-bold text-slate-700 mb-1.5">
+                        Rua / Avenida *
+                      </label>
+                      <input
+                        id="rua"
+                        type="text"
+                        required
+                        placeholder="Ex: Rua das Flores"
+                        value={rua}
+                        onChange={(e) => setRua(e.target.value)}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-1">
+                      <label htmlFor="numeroEndereco" className="block text-xs font-bold text-slate-700 mb-1.5">
+                        Número *
+                      </label>
+                      <input
+                        id="numeroEndereco"
+                        type="text"
+                        required
+                        placeholder="123"
+                        value={numeroEndereco}
+                        onChange={(e) => setNumeroEndereco(e.target.value)}
+                        className="w-full px-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                      />
+                    </div>
+
+                    <div className="col-span-2">
+                      <label htmlFor="bairro" className="block text-xs font-bold text-slate-700 mb-1.5">
+                        Bairro *
+                      </label>
+                      <input
+                        id="bairro"
+                        type="text"
+                        required
+                        placeholder="Ex: Centro"
+                        value={bairro}
+                        onChange={(e) => setBairro(e.target.value)}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="complemento" className="block text-xs font-bold text-slate-700 mb-1.5">
+                      Complemento (Apto, Bloco, Referência)
                     </label>
                     <input
-                      id="cep"
+                      id="complemento"
                       type="text"
-                      placeholder="00000-000"
-                      value={cep}
-                      onChange={(e) => setCep(e.target.value)}
-                      className="w-full px-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
+                      placeholder="Ex: Apto 42, Bloco B"
+                      value={complemento}
+                      onChange={(e) => setComplemento(e.target.value)}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
                     />
                   </div>
+                </>
+              )}
 
-                  <div className="col-span-2">
-                    <label htmlFor="rua" className="block text-xs font-bold text-slate-700 mb-1.5">
-                      Rua / Avenida *
-                    </label>
-                    <input
-                      id="rua"
-                      type="text"
-                      required
-                      placeholder="Ex: Rua das Flores"
-                      value={rua}
-                      onChange={(e) => setRua(e.target.value)}
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="col-span-1">
-                    <label htmlFor="numeroEndereco" className="block text-xs font-bold text-slate-700 mb-1.5">
-                      Número *
-                    </label>
-                    <input
-                      id="numeroEndereco"
-                      type="text"
-                      required
-                      placeholder="123"
-                      value={numeroEndereco}
-                      onChange={(e) => setNumeroEndereco(e.target.value)}
-                      className="w-full px-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
-                    />
-                  </div>
-
-                  <div className="col-span-2">
-                    <label htmlFor="bairro" className="block text-xs font-bold text-slate-700 mb-1.5">
-                      Bairro *
-                    </label>
-                    <input
-                      id="bairro"
-                      type="text"
-                      required
-                      placeholder="Ex: Centro"
-                      value={bairro}
-                      onChange={(e) => setBairro(e.target.value)}
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label htmlFor="complemento" className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Complemento (Apto, Bloco, Referência)
-                  </label>
-                  <input
-                    id="complemento"
-                    type="text"
-                    placeholder="Ex: Apto 42, Bloco B"
-                    value={complemento}
-                    onChange={(e) => setComplemento(e.target.value)}
-                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all"
-                  />
-                </div>
-              </>
-            )}
-
-            {/* Campo: Observações Gerais */}
-            <div className="pt-2 border-t border-slate-100">
-              <label htmlFor="observacoes" className="block text-xs font-bold text-slate-700 mb-1.5">
-                Observações do Pedido (Opcional)
-              </label>
-              <textarea
-                id="observacoes"
-                rows={2}
-                placeholder="Ex: Ponto da carne bem passado, sem talheres plásticos..."
-                value={observacoes}
-                onChange={(e) => setObservacoes(e.target.value)}
-                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all resize-none"
-              />
+              <div className="pt-2 border-t border-slate-100">
+                <label htmlFor="observacoes" className="block text-xs font-bold text-slate-700 mb-1.5">
+                  Observações para o Pedido (Opcional)
+                </label>
+                <textarea
+                  id="observacoes"
+                  rows={2}
+                  placeholder="Ex: Ponto da carne bem passado, sem talheres plásticos..."
+                  value={observacoes}
+                  onChange={(e) => setObservacoes(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:bg-white transition-all resize-none"
+                />
+              </div>
             </div>
-          </div>
+          </section>
+
+          {/* 
+            ======================================================================
+            SEÇÃO 4: FORMA DE PAGAMENTO (PIX, CARTÃO, DINHEIRO + TROCO)
+            ======================================================================
+          */}
+          <section aria-label="Forma de pagamento">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+              4. Forma de Pagamento
+            </h2>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs flex flex-col gap-3">
+              <div className="grid grid-cols-1 gap-2.5">
+                {/* Opção Pix */}
+                <label
+                  onClick={() => setMetodoPagamento('Pix')}
+                  className={`flex items-center justify-between p-3.5 rounded-xl border-2 transition-all cursor-pointer ${
+                    metodoPagamento === 'Pix'
+                      ? 'border-emerald-500 bg-emerald-50/60 shadow-xs'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-lg">
+                      ❖
+                    </div>
+                    <div>
+                      <span className="block font-bold text-sm text-slate-900">Pix</span>
+                      <span className="block text-xs text-slate-500">
+                        Aprovação instantânea via QR Code ou Copia e Cola
+                      </span>
+                    </div>
+                  </div>
+                  <input
+                    type="radio"
+                    name="formaPagamento"
+                    checked={metodoPagamento === 'Pix'}
+                    onChange={() => setMetodoPagamento('Pix')}
+                    className="w-4 h-4 text-emerald-600 focus:ring-emerald-500"
+                  />
+                </label>
+
+                {/* Opção Cartão */}
+                <label
+                  onClick={() => setMetodoPagamento('Cartao')}
+                  className={`flex items-center justify-between p-3.5 rounded-xl border-2 transition-all cursor-pointer ${
+                    metodoPagamento === 'Cartao'
+                      ? 'border-rose-500 bg-rose-50/60 shadow-xs'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <span className="block font-bold text-sm text-slate-900">
+                        Cartão (na entrega / mesa)
+                      </span>
+                      <span className="block text-xs text-slate-500">
+                        Débito, Crédito ou Vale Refeição na maquininha
+                      </span>
+                    </div>
+                  </div>
+                  <input
+                    type="radio"
+                    name="formaPagamento"
+                    checked={metodoPagamento === 'Cartao'}
+                    onChange={() => setMetodoPagamento('Cartao')}
+                    className="w-4 h-4 text-rose-600 focus:ring-rose-500"
+                  />
+                </label>
+
+                {/* Opção Dinheiro */}
+                <label
+                  onClick={() => setMetodoPagamento('Dinheiro')}
+                  className={`flex items-center justify-between p-3.5 rounded-xl border-2 transition-all cursor-pointer ${
+                    metodoPagamento === 'Dinheiro'
+                      ? 'border-amber-500 bg-amber-50/60 shadow-xs'
+                      : 'border-slate-200 hover:border-slate-300 bg-white'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <span className="block font-bold text-sm text-slate-900">Dinheiro</span>
+                      <span className="block text-xs text-slate-500">
+                        Pagamento em cédulas na entrega ou no caixa
+                      </span>
+                    </div>
+                  </div>
+                  <input
+                    type="radio"
+                    name="formaPagamento"
+                    checked={metodoPagamento === 'Dinheiro'}
+                    onChange={() => setMetodoPagamento('Dinheiro')}
+                    className="w-4 h-4 text-amber-600 focus:ring-amber-500"
+                  />
+                </label>
+              </div>
+
+              {/* Lógica Condicional de Troco se Dinheiro */}
+              {metodoPagamento === 'Dinheiro' && (
+                <div className="mt-2 pt-3 border-t border-slate-100 flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <label htmlFor="checkTroco" className="text-xs font-bold text-slate-700 cursor-pointer flex items-center gap-2">
+                      <input
+                        id="checkTroco"
+                        type="checkbox"
+                        checked={precisaTroco}
+                        onChange={(e) => setPrecisaTroco(e.target.checked)}
+                        className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500"
+                      />
+                      <span>Precisa de troco?</span>
+                    </label>
+
+                    {precisaTroco && (
+                      <span className="text-[11px] font-semibold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">
+                        Total a pagar: {formatarMoeda(totalGeral)}
+                      </span>
+                    )}
+                  </div>
+
+                  {precisaTroco && (
+                    <div className="animate-in fade-in slide-in-from-top-2">
+                      <label htmlFor="trocoPara" className="block text-xs font-bold text-slate-700 mb-1">
+                        Precisa de troco para quanto? *
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3.5 top-3.5 text-sm font-bold text-slate-400">
+                          R$
+                        </span>
+                        <input
+                          id="trocoPara"
+                          type="text"
+                          required={precisaTroco}
+                          placeholder="Ex: 100,00"
+                          value={trocoPara}
+                          onChange={(e) => setTrocoPara(e.target.value)}
+                          className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 text-sm font-bold focus:ring-2 focus:ring-amber-500 focus:bg-white transition-all"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
 
           {/* Mensagem de Erro de Validação */}
           {erroFormulario && (
@@ -649,12 +821,11 @@ export default function CarrinhoPage({ params }: PageProps) {
 
       {/* 
         ========================================================================
-        RODAPÉ FIXO: DISCRIMINAÇÃO DE VALORES E BOTÃO DE SUBMIT
+        RODAPÉ FIXO: VALORES E BOTÃO DE SUBMIT
         ========================================================================
       */}
       <aside className="fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-xl border-t border-slate-200/90 p-4 z-40 shadow-2xl">
         <div className="max-w-md mx-auto flex flex-col gap-2.5">
-          {/* Detalhamento de valores se for Delivery */}
           {tipoPedido === 'Delivery' && (
             <div className="flex flex-col gap-1 text-xs text-slate-500 border-b border-slate-100 pb-2">
               <div className="flex justify-between">
@@ -662,35 +833,45 @@ export default function CarrinhoPage({ params }: PageProps) {
                 <span className="font-semibold text-slate-700">{formatarMoeda(subtotal)}</span>
               </div>
               <div className="flex justify-between">
-                <span className="flex items-center gap-1 text-rose-600 font-semibold">
-                  Taxa de Entrega:
-                </span>
+                <span className="text-rose-600 font-semibold">Taxa de Entrega:</span>
                 <span className="font-bold text-rose-600">{formatarMoeda(taxaEntrega)}</span>
               </div>
             </div>
           )}
 
-          {/* Valor Total Geral */}
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              Total {tipoPedido === 'Delivery' ? 'Geral' : 'do Pedido'}
-            </span>
-            <span className="text-xl font-black text-slate-900 tracking-tight">
+            <div className="flex flex-col">
+              <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                Total do Pedido
+              </span>
+              <span className="text-[11px] text-slate-500 font-medium">
+                Pagamento via: <strong>{metodoPagamento === 'Pix' ? 'Pix' : metodoPagamento === 'Cartao' ? 'Cartão' : 'Dinheiro'}</strong>
+              </span>
+            </div>
+            <span className="text-2xl font-black text-slate-900 tracking-tight">
               {formatarMoeda(totalGeral)}
             </span>
           </div>
 
-          {/* Botão de Envio de Pedido */}
           <button
             form="checkout-form"
             type="submit"
             disabled={isSubmitting}
-            className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-98 disabled:opacity-75 disabled:pointer-events-none text-white font-extrabold text-base rounded-2xl shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center gap-2.5 cursor-pointer"
+            className={`w-full py-4 text-white font-extrabold text-base rounded-2xl shadow-lg active:scale-98 disabled:opacity-75 disabled:pointer-events-none transition-all flex items-center justify-center gap-2.5 cursor-pointer ${
+              metodoPagamento === 'Pix'
+                ? 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-600/30'
+                : 'bg-slate-900 hover:bg-slate-800 shadow-slate-900/30'
+            }`}
           >
             {isSubmitting ? (
               <>
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 <span>Processando Pedido...</span>
+              </>
+            ) : metodoPagamento === 'Pix' ? (
+              <>
+                <span className="text-lg">❖</span>
+                <span>Pagar {formatarMoeda(totalGeral)} via Pix</span>
               </>
             ) : (
               <>
@@ -700,7 +881,7 @@ export default function CarrinhoPage({ params }: PageProps) {
                 <span>
                   {tipoPedido === 'Mesa' && 'Enviar Pedido para a Cozinha'}
                   {tipoPedido === 'Retirada' && 'Confirmar Pedido para Retirada'}
-                  {tipoPedido === 'Delivery' && 'Finalizar Pedido para Entrega'}
+                  {tipoPedido === 'Delivery' && 'Confirmar Pedido para Entrega'}
                 </span>
               </>
             )}

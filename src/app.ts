@@ -1,6 +1,7 @@
 import express, { Application, Request, Response } from 'express';
 import cors from 'cors';
 import { produtoRoutes } from './routes/produtoRoutes';
+import { pedidoRoutes } from './routes/pedidoRoutes';
 
 export const app: Application = express();
 
@@ -16,6 +17,9 @@ app.get('/health', (_req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// Registro da rota de pedidos:
+app.use('/api/pedidos', pedidoRoutes);
 
 // Registro da rota de produtos:
 // Suporta chamada padrão com query/header: GET /api/produtos?tenant_slug=...
