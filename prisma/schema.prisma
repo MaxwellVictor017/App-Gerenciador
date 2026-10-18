@@ -1,0 +1,485 @@
+// ==============================================================================
+// SCHEMA PRISMA - SISTEMA SAAS MULTI-TENANT ENTERPRISE PARA RESTAURANTES
+// Provedor de Banco de Dados: PostgreSQL (Neon Serverless ou Local)
+// Isolamento Estrito por Tenant (Multi-Tenant Relacional com Chaves Compostas)
+// ==============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ==============================================================================
+// ENUMS DO DOMÍNIO GASTRONÔMICO
+// ==============================================================================
+
+enum NichoEstabelecimento {
+  PIZZARIA
+  HAMBURGUERIA
+  RESTAURANTE
+  BAR
+  ORIENTAL
+  CAFETERIA
+  OUTRO
+}
+
+enum TipoPedido {
+  MESA
+  RETIRADA
+  DELIVERY
+}
+
+enum StatusPedido {
+  RECEBIDO
+  EM_PREPARO
+  PRONTO_ENTREGA
+  EM_ROTA
+  ENTREGUE
+  FINALIZADO
+  CANCELADO
+}
+
+enum MetodoPagamento {
+  PIX
+  CARTAO_CREDITO
+  CARTAO_DEBITO
+  DINHEIRO
+  VALE_REFEICAO
+}
+
+enum StatusPagamento {
+  PENDENTE
+  PAGO
+  REEMBOLSADO
+  FALHOU
+}
+
+enum StatusMesa {
+  LIVRE
+  OCUPADA
+  RESERVADA
+  AGUARDANDO_CONTA
+}
+
+enum TipoCupom {
+  PERCENTUAL
+  VALOR_FIXO
+}
+
+enum CargoFuncionario {
+  GERENTE
+  GARCOM
+  COZINHEIRO
+  CAIXA
+  ATENDENTE
+  ENTREGADOR
+}
+
+
+// ==============================================================================
+// 1. MODEL: Tenant (Inquilino / Estabelecimento Raiz)
+// Cada restaurante possui sua entidade independente garantindo isolamento total
+// ==============================================================================
+model Tenant {
+  id          String               @id @default(uuid()) @db.Uuid
+  nome        String               @db.VarChar(120)
+  slug        String               @unique @db.VarChar(100)
+  nicho       NichoEstabelecimento @default(OUTRO)
+  corPrimaria String               @default("#E11D48") @map("cor_primaria") @db.VarChar(7)
+  logoUrl     String?              @map("logo_url") @db.Text
+  descricao   String?              @db.Text
+  telefone    String?              @db.VarChar(30)
+  ativo       Boolean              @default(true)
+  criadoEm    DateTime             @default(now()) @map("criado_em")
+  atualizadoEm DateTime            @updatedAt @map("atualizado_em")
+
+  // Relações 1:1 e 1:N com isolamento estrito
+  configuracao  TenantConfig?
+  categorias    Categoria[]
+  produtos      Produto[]
+  gruposOpcao   GrupoOpcional[]
+  mesas         Mesa[]
+  pedidos       Pedido[]
+  clientes      Cliente[]
+  transacoesPix TransacaoPix[]
+  cupons        CupomDesconto[]
+  avaliacoes    Avaliacao[]
+  funcionarios  Funcionario[]
+
+  @@map("tenants")
+}
+
+// ==============================================================================
+// 2. MODEL: TenantConfig (Configurações Operacionais & Financeiras do Tenant)
+// ==============================================================================
+model TenantConfig {
+  id                   String   @id @default(uuid()) @db.Uuid
+  tenantId             String   @unique @map("tenant_id") @db.Uuid
+  chavePix             String?  @map("chave_pix") @db.VarChar(100)
+  titularPix           String?  @map("titular_pix") @db.VarChar(100)
+  tipoChavePix         String?  @map("tipo_chave_pix") @db.VarChar(20) // CPF, CNPJ, EMAIL, TELEFONE, ALEATORIA
+  taxaEntregaPadrao    Decimal  @default(0.00) @map("taxa_entrega_padrao") @db.Decimal(10, 2)
+  pedidoMinimo         Decimal  @default(0.00) @map("pedido_minimo") @db.Decimal(10, 2)
+  tempoMedioPreparoMin Int      @default(30) @map("tempo_medio_preparo_min")
+  tempoMedioEntregaMin Int      @default(45) @map("tempo_medio_entrega_min")
+  aceitaMesa           Boolean  @default(true) @map("aceita_mesa")
+  aceitaRetirada       Boolean  @default(true) @map("aceita_retirada")
+  aceitaDelivery       Boolean  @default(true) @map("aceita_delivery")
+  aceitaPix            Boolean  @default(true) @map("aceita_pix")
+  aceitaCartao         Boolean  @default(true) @map("aceita_cartao")
+  aceitaDinheiro       Boolean  @default(true) @map("aceita_dinheiro")
+  horarioFuncionamento String?  @map("horario_funcionamento") @db.VarChar(150)
+  enderecoCompleto     String?  @map("endereco_completo") @db.Text
+  criadoEm             DateTime @default(now()) @map("criado_em")
+  atualizadoEm         DateTime @updatedAt @map("atualizado_em")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_configs")
+}
+
+// ==============================================================================
+// 3. MODEL: Categoria
+// Categorização de itens do cardápio isolada por tenant
+// ==============================================================================
+model Categoria {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  nome        String   @db.VarChar(80)
+  ordem       Int      @default(0)
+  ativa       Boolean  @default(true)
+  criadoEm    DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  produtos Produto[]
+
+  @@unique([tenantId, nome])
+  @@index([tenantId])
+  @@index([tenantId, ordem])
+  @@map("categorias")
+}
+
+// ==============================================================================
+// 4. MODEL: Produto
+// Itens vendáveis do cardápio com suporte a valores monetários precisos
+// ==============================================================================
+model Produto {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  categoriaId  String   @map("categoria_id") @db.Uuid
+  nome         String   @db.VarChar(120)
+  descricao    String?  @db.Text
+  precoBase    Decimal  @map("preco_base") @db.Decimal(10, 2)
+  imagemUrl    String?  @map("imagem_url") @db.Text
+  disponivel   Boolean  @default(true)
+  destaque     Boolean  @default(false)
+  ordem        Int      @default(0)
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  tenant      Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  categoria   Categoria              @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+  gruposOpcao ProdutoGrupoOpcional[]
+  itensPedido ItemPedido[]
+
+  @@index([tenantId])
+  @@index([tenantId, categoriaId])
+  @@index([tenantId, disponivel])
+  @@map("produtos")
+}
+
+// ==============================================================================
+// 5. MODEL: GrupoOpcional & ItemOpcional (Complementos, Adicionais e Variações)
+// Ex: "Ponto da Carne", "Borda da Pizza", "Adicionais Pagos", "Molhos"
+// ==============================================================================
+model GrupoOpcional {
+  id              String   @id @default(uuid()) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  nome            String   @db.VarChar(80) // Ex: "Escolha o Ponto", "Adicionais", "Molhos"
+  minimo          Int      @default(0)
+  maximo          Int      @default(1)
+  obrigatorio     Boolean  @default(false)
+  ordem           Int      @default(0)
+  criadoEm        DateTime @default(now()) @map("criado_em")
+  atualizadoEm    DateTime @updatedAt @map("atualizado_em")
+
+  tenant   Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  itens    ItemOpcional[]
+  produtos ProdutoGrupoOpcional[]
+
+  @@index([tenantId])
+  @@map("grupos_opcionais")
+}
+
+model ItemOpcional {
+  id              String   @id @default(uuid()) @db.Uuid
+  grupoOpcionalId String   @map("grupo_opcional_id") @db.Uuid
+  nome            String   @db.VarChar(80) // Ex: "Ao ponto", "Bacon Extra", "Catupiry"
+  preco           Decimal  @default(0.00) @db.Decimal(10, 2)
+  disponivel      Boolean  @default(true)
+  ordem           Int      @default(0)
+  criadoEm        DateTime @default(now()) @map("criado_em")
+  atualizadoEm    DateTime @updatedAt @map("atualizado_em")
+
+  grupo              GrupoOpcional        @relation(fields: [grupoOpcionalId], references: [id], onDelete: Cascade)
+  opcionaisEscolhidos ItemPedidoOpcional[]
+
+  @@index([grupoOpcionalId])
+  @@map("itens_opcionais")
+}
+
+// Relação N:N entre Produtos e Grupos de Opcionais
+model ProdutoGrupoOpcional {
+  produtoId       String @map("produto_id") @db.Uuid
+  grupoOpcionalId String @map("grupo_opcional_id") @db.Uuid
+
+  produto Produto       @relation(fields: [produtoId], references: [id], onDelete: Cascade)
+  grupo   GrupoOpcional @relation(fields: [grupoOpcionalId], references: [id], onDelete: Cascade)
+
+  @@id([produtoId, grupoOpcionalId])
+  @@map("produtos_grupos_opcionais")
+}
+
+// ==============================================================================
+// 6. MODEL: Mesa
+// Mesas físicas do restaurante com QR Code e isolamento estrito
+// ==============================================================================
+model Mesa {
+  id           String     @id @default(uuid()) @db.Uuid
+  tenantId     String     @map("tenant_id") @db.Uuid
+  numero       Int
+  capacidade   Int        @default(4)
+  status       StatusMesa @default(LIVRE)
+  qrCodeUrl    String?    @map("qr_code_url") @db.Text
+  criadoEm     DateTime   @default(now()) @map("criado_em")
+  atualizadoEm DateTime   @updatedAt @map("atualizado_em")
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pedidos Pedido[]
+
+  @@unique([tenantId, numero])
+  @@index([tenantId])
+  @@map("mesas")
+}
+
+// ==============================================================================
+// 7. MODEL: Cliente (CRM do Estabelecimento)
+// Histórico e relacionamento com o cliente isolado por restaurante
+// ==============================================================================
+model Cliente {
+  id           String   @id @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  nome         String   @db.VarChar(120)
+  telefone     String   @db.VarChar(30)
+  email        String?  @db.VarChar(150)
+  endereco     String?  @db.Text
+  totalGasto   Decimal  @default(0.00) @map("total_gasto") @db.Decimal(10, 2)
+  pedidosTotal Int      @default(0) @map("pedidos_total")
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pedidos Pedido[]
+
+  @@unique([tenantId, telefone])
+  @@index([tenantId])
+  @@map("clientes")
+}
+
+// ==============================================================================
+// 8. MODEL: Pedido (Coração Operacional do SaaS)
+// Suporta Mesa, Retirada e Delivery com máquina de estados e auditoria completa
+// ==============================================================================
+model Pedido {
+  id              String          @id @default(uuid()) @db.Uuid
+  tenantId        String          @map("tenant_id") @db.Uuid
+  clienteId       String?         @map("cliente_id") @db.Uuid
+  mesaId          String?         @map("mesa_id") @db.Uuid
+  codigo          String          @db.VarChar(20) // Ex: "PED-123456"
+  tipoPedido      TipoPedido      @default(MESA) @map("tipo_pedido")
+  status          StatusPedido    @default(RECEBIDO)
+  metodoPagamento MetodoPagamento @default(PIX) @map("metodo_pagamento")
+  statusPagamento StatusPagamento @default(PENDENTE) @map("status_pagamento")
+
+  // Dados do Cliente no momento do pedido (imutabilidade)
+  clienteNome     String          @map("cliente_nome") @db.VarChar(120)
+  clienteTelefone String?         @map("cliente_telefone") @db.VarChar(30)
+  numeroMesa      String?         @map("numero_mesa") @db.VarChar(20)
+
+  // Endereço de Delivery (se modalidade delivery)
+  cep             String?         @db.VarChar(10)
+  rua             String?         @db.VarChar(150)
+  numeroEndereco  String?         @map("numero_endereco") @db.VarChar(30)
+  bairro          String?         @db.VarChar(80)
+  cidade          String?         @db.VarChar(80)
+  complemento     String?         @db.VarChar(120)
+  observacoes     String?         @db.Text
+
+  // Valores Financeiros Estritos
+  subtotal        Decimal         @db.Decimal(10, 2)
+  taxaEntrega     Decimal         @default(0.00) @map("taxa_entrega") @db.Decimal(10, 2)
+  desconto        Decimal         @default(0.00) @db.Decimal(10, 2)
+  total           Decimal         @db.Decimal(10, 2)
+
+  // Dados de Troco se Dinheiro
+  precisaTroco    Boolean         @default(false) @map("precisa_troco")
+  trocoPara       Decimal?        @map("troco_para") @db.Decimal(10, 2)
+
+  // Timestamps de Auditoria Operacional
+  criadoEm        DateTime        @default(now()) @map("criado_em")
+  iniciadoEm      DateTime?       @map("iniciado_em")
+  prontoEm        DateTime?       @map("pronto_em")
+  finalizadoEm    DateTime?       @map("finalizado_em")
+  canceladoEm     DateTime?       @map("cancelado_em")
+  motivoCancelamento String?      @map("motivo_cancelamento") @db.Text
+
+  // Relações
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cliente       Cliente?       @relation(fields: [clienteId], references: [id], onDelete: SetNull)
+  mesa          Mesa?          @relation(fields: [mesaId], references: [id], onDelete: SetNull)
+  cupomId       String?        @map("cupom_id") @db.Uuid
+  cupom         CupomDesconto? @relation(fields: [cupomId], references: [id], onDelete: SetNull)
+  itens         ItemPedido[]
+  transacaoPix  TransacaoPix?
+  avaliacoes    Avaliacao[]
+
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, tipoPedido])
+  @@index([tenantId, criadoEm])
+  @@map("pedidos")
+}
+
+// ==============================================================================
+// 9. MODEL: ItemPedido & ItemPedidoOpcional
+// Preservação histórica dos itens comprados (imutabilidade de preços)
+// ==============================================================================
+model ItemPedido {
+  id            String   @id @default(uuid()) @db.Uuid
+  pedidoId      String   @map("pedido_id") @db.Uuid
+  produtoId     String?  @map("produto_id") @db.Uuid
+  nomeProduto   String   @map("nome_produto") @db.VarChar(120) // Nome congelado no momento do pedido
+  precoUnitario Decimal  @map("preco_unitario") @db.Decimal(10, 2)
+  quantidade    Int      @default(1)
+  subtotal      Decimal  @db.Decimal(10, 2)
+  observacoes   String?  @db.Text
+  criadoEm      DateTime @default(now()) @map("criado_em")
+
+  pedido     Pedido               @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  produto    Produto?             @relation(fields: [produtoId], references: [id], onDelete: SetNull)
+  adicionais ItemPedidoOpcional[]
+
+  @@index([pedidoId])
+  @@map("itens_pedidos")
+}
+
+model ItemPedidoOpcional {
+  id             String   @id @default(uuid()) @db.Uuid
+  itemPedidoId   String   @map("item_pedido_id") @db.Uuid
+  itemOpcionalId String?  @map("item_opcional_id") @db.Uuid
+  nome           String   @db.VarChar(80) // Nome congelado (ex: "Bacon Extra")
+  preco          Decimal  @db.Decimal(10, 2) // Preço cobrado pelo adicional
+
+  itemPedido   ItemPedido    @relation(fields: [itemPedidoId], references: [id], onDelete: Cascade)
+  itemOpcional ItemOpcional? @relation(fields: [itemOpcionalId], references: [id], onDelete: SetNull)
+
+  @@index([itemPedidoId])
+  @@map("itens_pedidos_opcionais")
+}
+
+// ==============================================================================
+// 10. MODEL: TransacaoPix (Cobranças Instantâneas Pix)
+// ==============================================================================
+model TransacaoPix {
+  id           String          @id @default(uuid()) @db.Uuid
+  tenantId     String          @map("tenant_id") @db.Uuid
+  pedidoId     String          @unique @map("pedido_id") @db.Uuid
+  txid         String          @unique @db.VarChar(100)
+  chavePix     String          @map("chave_pix") @db.VarChar(100)
+  valor        Decimal         @db.Decimal(10, 2)
+  copiaCola    String          @map("copia_cola") @db.Text
+  qrCodeUrl    String?         @map("qr_code_url") @db.Text
+  status       StatusPagamento @default(PENDENTE)
+  expiraEm     DateTime        @map("expira_em")
+  pagoEm       DateTime?       @map("pago_em")
+  criadoEm     DateTime        @default(now()) @map("criado_em")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pedido Pedido @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("transacoes_pix")
+}
+
+// ==============================================================================
+// 11. MODEL: CupomDesconto (Promoções & Cupons por Tenant)
+// ==============================================================================
+model CupomDesconto {
+  id          String    @id @default(uuid()) @db.Uuid
+  tenantId    String    @map("tenant_id") @db.Uuid
+  codigo      String    @db.VarChar(50) // Ex: "PRIMEIRACOMPRA", "BELLA10"
+  tipo        TipoCupom @default(PERCENTUAL)
+  valor       Decimal   @db.Decimal(10, 2) // 10.00 (%) ou 15.00 (R$)
+  valorMinimo Decimal   @default(0.00) @map("valor_minimo") @db.Decimal(10, 2)
+  limiteUsos  Int?      @map("limite_usos")
+  usosAtuais  Int       @default(0) @map("usos_atuais")
+  validoAte   DateTime? @map("valido_ate")
+  ativo       Boolean   @default(true)
+  criadoEm    DateTime  @default(now()) @map("criado_em")
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pedidos Pedido[]
+
+  @@unique([tenantId, codigo])
+  @@index([tenantId])
+  @@map("cupons_desconto")
+}
+
+// ==============================================================================
+// 12. MODEL: Avaliacao (Feedbacks & Estrelas dos Clientes)
+// ==============================================================================
+model Avaliacao {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenantId            String   @map("tenant_id") @db.Uuid
+  pedidoId            String?  @map("pedido_id") @db.Uuid
+  clienteNome         String   @map("cliente_nome") @db.VarChar(100)
+  nota                Int      @default(5) // 1 a 5 estrelas
+  comentario          String?  @db.Text
+  respostaRestaurante String?  @map("resposta_restaurante") @db.Text
+  criadoEm            DateTime @default(now()) @map("criado_em")
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pedido Pedido? @relation(fields: [pedidoId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@map("avaliacoes")
+}
+
+// ==============================================================================
+// 13. MODEL: Funcionario (Equipe & Colaboradores do Restaurante)
+// ==============================================================================
+model Funcionario {
+  id           String            @id @default(uuid()) @db.Uuid
+  tenantId     String            @map("tenant_id") @db.Uuid
+  nome         String            @db.VarChar(120)
+  cargo        CargoFuncionario  @default(ATENDENTE)
+  email        String?           @db.VarChar(120)
+  telefone     String?           @db.VarChar(30)
+  ativo        Boolean           @default(true)
+  criadoEm     DateTime          @default(now()) @map("criado_em")
+  atualizadoEm DateTime          @updatedAt @map("atualizado_em")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([tenantId, cargo])
+  @@map("funcionarios")
+}
+
