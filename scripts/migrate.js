@@ -37,7 +37,7 @@ async function runMigration() {
 
   for (const statement of statements) {
     try {
-      await sql.query(statement);
+      await sql(statement);
       console.log('✔ Executado:', statement.split('\n')[0].substring(0, 60) + '...');
     } catch (err) {
       console.warn('⚠️ Nota na instrução:', err.message);
