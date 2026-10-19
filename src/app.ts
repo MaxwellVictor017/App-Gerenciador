@@ -3,6 +3,7 @@ import cors from 'cors';
 import { produtoRoutes } from './routes/produtoRoutes';
 import { pedidoRoutes } from './routes/pedidoRoutes';
 import { funcionarioRoutes } from './routes/funcionarioRoutes';
+import { designRoutes } from './routes/designRoutes';
 
 export const app: Application = express();
 
@@ -19,6 +20,10 @@ app.get('/health', (_req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// Registro da rota de design / customizador de cardápio:
+app.use('/api/design', designRoutes);
+app.use('/api/:tenant_slug/design', designRoutes);
 
 // Registro da rota de pedidos:
 app.use('/api/pedidos', pedidoRoutes);

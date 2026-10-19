@@ -2,6 +2,7 @@
 
 import React, { use, useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
+import { MenuStudioDesigner } from '@/components/admin/MenuStudioDesigner';
 
 interface PageProps {
   params: Promise<{ restaurante_slug: string }> | { restaurante_slug: string };
@@ -108,7 +109,7 @@ export default function RestauranteAdminPage({ params }: PageProps) {
       : (params as { restaurante_slug: string });
   const { restaurante_slug } = resolvedParams;
 
-  const [abaAtiva, setAbaAtiva] = useState<'produtos' | 'funcionarios' | 'kds' | 'metricas'>('produtos');
+  const [abaAtiva, setAbaAtiva] = useState<'produtos' | 'funcionarios' | 'kds' | 'metricas' | 'design'>('produtos');
   const [subAbaKds, setSubAbaKds] = useState<'cozinha' | 'aguardando_pagamento'>('cozinha');
   const [restauranteInfo, setRestauranteInfo] = useState<any>(null);
 
@@ -754,6 +755,19 @@ export default function RestauranteAdminPage({ params }: PageProps) {
               <span>📊</span>
               <span>Métricas</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setAbaAtiva('design')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                abaAtiva === 'design'
+                  ? 'bg-gradient-to-r from-amber-500 to-amber-400 text-slate-950 shadow-lg font-extrabold ring-2 ring-amber-400/30'
+                  : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+              }`}
+            >
+              <span>🎨</span>
+              <span>Design & Cardápio</span>
+            </button>
           </div>
 
           {/* Botões de Ação Rápida no Topo da Aba */}
@@ -1365,6 +1379,18 @@ export default function RestauranteAdminPage({ params }: PageProps) {
               <span className="text-[11px] text-slate-500 mt-1">Receita consolidada</span>
             </div>
           </section>
+        )}
+
+        {/* 
+          ======================================================================
+          ABA 5: MENU STUDIO (DESIGN & PERSONALIZAÇÃO VISUAL NO-CODE)
+          ======================================================================
+        */}
+        {abaAtiva === 'design' && (
+          <MenuStudioDesigner
+            restaurante_slug={restaurante_slug}
+            restauranteInfo={restauranteInfo}
+          />
         )}
       </main>
 
