@@ -4,6 +4,7 @@ import { produtoRoutes } from './routes/produtoRoutes';
 import { pedidoRoutes } from './routes/pedidoRoutes';
 import { funcionarioRoutes } from './routes/funcionarioRoutes';
 import { designRoutes } from './routes/designRoutes';
+import { tenantRoutes } from './routes/tenantRoutes';
 
 export const app: Application = express();
 
@@ -20,6 +21,9 @@ app.get('/health', (_req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// Registro da rota de gerenciamento de tenants e máscaras:
+app.use('/api/tenants', tenantRoutes);
 
 // Registro da rota de design / customizador de cardápio:
 app.use('/api/design', designRoutes);
